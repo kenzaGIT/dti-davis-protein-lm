@@ -1,0 +1,19 @@
+name: dti
+channels:
+  - conda-forge
+  - pytorch
+dependencies:
+  - python=3.10
+  - numpy
+  - pandas
+  - scikit-learn
+  - tqdm
+  - rdkit
+  - pytorch
+  - pip
+  - pip:
+      - transformers
+      - esm
+      - PyTDC
+      - matplotlib
+      - seaborn
