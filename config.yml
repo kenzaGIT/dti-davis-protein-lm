@@ -1,0 +1,25 @@
+global:
+  prefix: /work/embeddings/bio_embeddings
+  device: cpu
+  n_jobs: 1
+  sequences_file: /work/data/proteins.fasta
+
+embedders:
+  seqvec:
+    protocol: embed
+    type: seqvec
+    pooling: mean
+
+  protbert:
+    protocol: embed
+    type: prottrans_bert_bfd
+    pooling: mean
+
+  prott5:
+    protocol: embed
+    type: prottrans_t5_xl_u50
+    pooling: mean
+
+output:
+  directory: /work/embeddings/bio_embeddings
+  format: numpy

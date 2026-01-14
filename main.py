@@ -20,32 +20,36 @@ from transformers import AutoTokenizer, AutoModel
 import esm
 
 # ===============================
-# 2. Paths
+# 2. Paths (SINGLE SOURCE OF TRUTH)
 # ===============================
-DATA_DIR = "data"
-EMB_DIR = "embeddings"
-FEAT_DIR = "features"
-RES_DIR = "results"
+ROOT_DIR = os.getcwd()
+
+DATA_DIR = os.path.join(ROOT_DIR, "data")
+EMB_DIR  = os.path.join(ROOT_DIR, "embeddings")
+FEAT_DIR = os.path.join(ROOT_DIR, "features")
+RES_DIR  = os.path.join(ROOT_DIR, "results")
 
 os.makedirs(EMB_DIR, exist_ok=True)
 os.makedirs(FEAT_DIR, exist_ok=True)
 os.makedirs(RES_DIR, exist_ok=True)
 
 # ===============================
-# 3. Load Davis dataset
+# 3. Metrics storage
+# ===============================
+metrics_log = []
+
+# ===============================
+# 4. Load Davis dataset
 # ===============================
 print("Loading Davis dataset...")
 data = DTI(name="Davis")
 df = data.get_data()
 
-print("Dataset size:", df.shape)
-print("Columns:", df.columns)
-
 y = df["Y"].values
 np.save(os.path.join(RES_DIR, "y_true.npy"), y)
 
 # ===============================
-# 4. Ligand features (MACCS)
+# 5. Ligand features (MACCS)
 # ===============================
 def compute_maccs(smiles):
     mol = Chem.MolFromSmiles(smiles)
@@ -55,17 +59,16 @@ def compute_maccs(smiles):
 
 ligand_path = os.path.join(FEAT_DIR, "X_ligand_maccs.npy")
 
-if os.path.exists(ligand_path):
+if os.path.isfile(ligand_path):
+    print("Loading cached MACCS fingerprints...")
     X_ligand = np.load(ligand_path)
 else:
     print("Computing MACCS fingerprints...")
     X_ligand = np.vstack(df["Drug"].apply(compute_maccs))
     np.save(ligand_path, X_ligand)
 
-print("Ligand shape:", X_ligand.shape)
-
 # ===============================
-# 5. Protein one-hot (baseline)
+# 6. Protein one-hot encoding
 # ===============================
 AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY"
 
@@ -79,7 +82,8 @@ def protein_onehot(seq):
 
 onehot_path = os.path.join(FEAT_DIR, "X_protein_onehot.npy")
 
-if os.path.exists(onehot_path):
+if os.path.isfile(onehot_path):
+    print("Loading cached protein one-hot features...")
     X_protein_onehot = np.load(onehot_path)
 else:
     print("Computing protein one-hot features...")
@@ -87,7 +91,7 @@ else:
     np.save(onehot_path, X_protein_onehot)
 
 # ===============================
-# 6. Evaluation function
+# 7. Evaluation function
 # ===============================
 def evaluate(model, X, y, name):
     X_tr, X_te, y_tr, y_te = train_test_split(
@@ -111,8 +115,16 @@ def evaluate(model, X, y, name):
 
     np.save(os.path.join(RES_DIR, f"y_pred_{name}.npy"), y_pred)
 
+    metrics_log.append({
+        "experiment": name,
+        "model": model.__class__.__name__,
+        "rmse": rmse,
+        "r2": r2,
+        "mcc": mcc
+    })
+
 # ===============================
-# 7. Models
+# 8. Models
 # ===============================
 rf = RandomForestRegressor(
     n_estimators=200,
@@ -127,7 +139,7 @@ mlp = MLPRegressor(
 )
 
 # ===============================
-# 8. Baseline experiment
+# 9. Baseline experiment
 # ===============================
 evaluate(
     rf,
@@ -137,36 +149,29 @@ evaluate(
 )
 
 # ===============================
-# 9. Unique proteins
+# 10. Unique proteins
 # ===============================
-print("\nExtracting unique protein sequences...")
 unique_proteins = df["Target"].unique()
-print("Unique proteins:", len(unique_proteins))
 
 # ===============================
-# 10. ProtBERT embeddings (CPU safe)
+# 11. ProtBERT embeddings
 # ===============================
 protbert_path = os.path.join(EMB_DIR, "protein_protbert_dict.npy")
 
-if os.path.exists(protbert_path):
+if os.path.isfile(protbert_path):
     protein_bert = np.load(protbert_path, allow_pickle=True).item()
 else:
-    print("Computing ProtBERT embeddings...")
-    tokenizer = AutoTokenizer.from_pretrained(
-        "Rostlab/prot_bert", do_lower_case=False
-    )
+    tokenizer = AutoTokenizer.from_pretrained("Rostlab/prot_bert", do_lower_case=False)
     model = AutoModel.from_pretrained("Rostlab/prot_bert")
     model.eval()
 
     protein_bert = {}
-
-    for i, seq in enumerate(unique_proteins):
-        seq_spaced = " ".join(list(seq))
+    for seq in unique_proteins:
+        seq_spaced = " ".join(seq)
         inputs = tokenizer(seq_spaced, return_tensors="pt", truncation=True)
         with torch.no_grad():
             out = model(**inputs)
-        protein_bert[seq] = out.last_hidden_state.mean(dim=1).squeeze().numpy()
-        print(f"ProtBERT {i+1}/{len(unique_proteins)}")
+        protein_bert[seq] = out.last_hidden_state.mean(1).squeeze().numpy()
 
     np.save(protbert_path, protein_bert)
 
@@ -180,28 +185,23 @@ evaluate(
 )
 
 # ===============================
-# 11. ESM-2 embeddings (CPU safe)
+# 12. ESM-2 embeddings
 # ===============================
 esm_path = os.path.join(EMB_DIR, "protein_esm2_dict.npy")
 
-if os.path.exists(esm_path):
+if os.path.isfile(esm_path):
     protein_esm = np.load(esm_path, allow_pickle=True).item()
 else:
-    print("Computing ESM-2 embeddings...")
     esm_model, alphabet = esm.pretrained.esm2_t6_8M_UR50D()
     esm_model.eval()
     batch_converter = alphabet.get_batch_converter()
 
     protein_esm = {}
-
-    for i, seq in enumerate(unique_proteins):
-        data = [("p", seq)]
-        _, _, tokens = batch_converter(data)
+    for seq in unique_proteins:
+        _, _, tokens = batch_converter([("p", seq)])
         with torch.no_grad():
             res = esm_model(tokens, repr_layers=[6])
-        emb = res["representations"][6][0, 1:len(seq)+1].mean(0).numpy()
-        protein_esm[seq] = emb
-        print(f"ESM-2 {i+1}/{len(unique_proteins)}")
+        protein_esm[seq] = res["representations"][6][0, 1:len(seq)+1].mean(0).numpy()
 
     np.save(esm_path, protein_esm)
 
@@ -221,4 +221,10 @@ evaluate(
     "esm2_mlp"
 )
 
-print("\n✅ ALL GROUP 1 EXPERIMENTS COMPLETED SUCCESSFULLY.")
+# ===============================
+# 13. Save metrics
+# ===============================
+metrics_df = pd.DataFrame(metrics_log)
+metrics_df.to_csv(os.path.join(RES_DIR, "metrics.csv"), index=False)
+
+print("\n✅ ALL EXPERIMENTS COMPLETED — METRICS SAVED")
